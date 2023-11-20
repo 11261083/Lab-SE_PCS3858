@@ -3,7 +3,7 @@
 #include <map>
 #include <stdio.h>
 
-#define MAC_8012_1 "aa:bb:cc:ee:dd:ff"
+#define MAC_8012_1 "FF:FF:C1:0E:22:EC"
 #define MAC_8012_2 "aa:bb:cc:ee:dd:ff"
 #define MAC_8022_1 "aa:bb:cc:ee:dd:ff"
 #define MAC_8022_2 "aa:bb:cc:ee:dd:ff"
