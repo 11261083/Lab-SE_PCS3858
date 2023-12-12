@@ -1,4 +1,3 @@
-#include <DHT.h>
 #include <Wire.h>
 #include <LoRa.h>
 #include <SPI.h>
@@ -6,11 +5,9 @@
 #include <Adafruit_SSD1306.h>
 #include <time.h>
 #include <TimeLib.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
 #include <ArduinoJson.h>
+#include <ArduinoBLE.h>
+#include <map>
 
 
 /* Endereço I2C do display */
@@ -38,18 +35,39 @@
 #define HIGH_GAIN_LORA     20  /* dBm */
 #define BAND               915E6  /* 915MHz de frequencia */
 
-/* Configuracao do BLE */
-int scanTime = 1; //Em Segundos
-int nivelRSSI = -95; //Ajustar conforme o ambiente
-String dispositivosAutorizados[] = {"ff:ff:c1:0e:22:ec", "ff:ff:c1:0e:1e:60"}; //MAC do seu dispositivo BLE
-String dispositivoPresente = "0";
-
 
 /* Definicaco do Unique ID do dispositivo */
 #define StopID              101
 #define LineID_A            8012
 #define LineID_B            8022
 #define LineID_C            8032
+
+/* Configuracao do BLE */
+String dispositivoPresente = "0";
+#define MAC_8012_1 "FF:FF:C1:0E:1E:60"
+#define MAC_8022_1 "FF:FF:C1:0E:22:EC"
+std::map<std::string, const char*> MAC_beacon;
+
+#define CHARACTERISTIC_UUID_8012_1 "beb5483e-36e1-4688-b7f5-ea073618012a"
+#define CHARACTERISTIC_UUID_8012_2 "beb5483e-36e1-4688-b7f5-ea073618012b"
+#define CHARACTERISTIC_UUID_8022_1 "beb5483e-36e1-4688-b7f5-ea073618022a"
+#define CHARACTERISTIC_UUID_8022_2 "beb5483e-36e1-4688-b7f5-ea073618022b"
+#define CHARACTERISTIC_UUID_8022_3 "beb5483e-36e1-4688-b7f5-ea073618022c"
+#define CHARACTERISTIC_UUID_RECV "beb5483e-36e1-4688-b7f5-ea0736180fab2c"
+#define SERVICE_UUID_8012 "4fafc201-1fb5-459e-8fcc-c5c9c3318012"
+#define SERVICE_UUID_8022 "4fafc201-1fb5-459e-8fcc-c5c9c3318022"
+#define SERVICE_UUID_RECV "4fafc201-1fb5-459e-8fcc-c5c9c32154ab"
+
+
+BLEService service_8012(SERVICE_UUID_8012);
+BLEService service_8022(SERVICE_UUID_8022);
+BLEService service_recv(SERVICE_UUID_RECV);
+BLEIntCharacteristic characteristic_8012_1(CHARACTERISTIC_UUID_8012_1, BLERead);
+BLEIntCharacteristic characteristic_8012_2(CHARACTERISTIC_UUID_8012_2, BLERead);
+BLEIntCharacteristic characteristic_8022_1(CHARACTERISTIC_UUID_8022_1, BLERead);
+BLEIntCharacteristic characteristic_8022_2(CHARACTERISTIC_UUID_8022_2, BLERead);
+BLEIntCharacteristic characteristic_8022_3(CHARACTERISTIC_UUID_8022_3, BLERead);
+BLEBoolCharacteristic characteristic_recv(CHARACTERISTIC_UUID_RECV, BLEWrite | BLENotify);
 
 /* objeto do display */
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, 16);
@@ -71,8 +89,8 @@ struct MacToId {
 };
 
 MacToId macMappings[] = {
-    {"ff:ff:c1:0e:1e:60", 60},
-    {"ff:ff:c1:0e:22:ec", 80},
+    {"FF:FF:C1:0E:1E:60", 60},
+    {"FF:FF:C1:0E:22:EC", 80},
     // Adicione mais mapeamentos conforme necessário
 };
 
@@ -437,6 +455,7 @@ void UpdateBusHistory(BusArrivalDataPacket arrivalData, bool isArrival)
     }
   }
   PrintBusHistory();
+  
 
   infoToDisplay[1] = infoToDisplay[0];
   infoToDisplay[0].lineId = arrivalData.lineId;
@@ -463,6 +482,20 @@ void UpdatePredictionHistory(BusPredictDataPacket predictData, bool isArrival)  
 
   PrintBusHistory();
 
+  switch(busIdToLineId[predictData.busId])
+    {
+      case 8012:
+        characteristic_8012_2.setValue(predictData.predictTime);
+        break;
+
+      case 8022:
+        characteristic_8022_2.setValue(predictData.predictTime);
+        break;
+
+      default:
+       break;
+    }
+
   predictToDisplay[1] = predictToDisplay[0];
   predictToDisplay[0].lineId = predictData.lineId;
   predictToDisplay[0].time = predictData.predictTime;
@@ -481,6 +514,20 @@ void SendBusArrivalData(uint32_t busId)
 
     time_t unix_timestamp = mktime(&timeinfo);
 
+    switch(busIdToLineId[busId])
+    {
+      case 8012:
+        characteristic_8012_1.setValue(static_cast<uint32_t>(unix_timestamp));
+        break;
+
+      case 8022:
+        characteristic_8022_1.setValue(static_cast<uint32_t>(unix_timestamp));
+        break;
+
+      default:
+       break;
+    }
+
     BusArrivalDataPacket arrivalData;
     arrivalData.packetType = BUSARRIVALDATA_TO_GATEWAY;
     arrivalData.lineId = busIdToLineId[busId];
@@ -497,26 +544,16 @@ void SendBusArrivalData(uint32_t busId)
     LoRa.endPacket();
 }
 
-class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
-    void onResult(BLEAdvertisedDevice advertisedDevice) {
-      String dispositivosEncontrados = advertisedDevice.getAddress().toString().c_str();
-      //Serial.println(dispositivosEncontrados);
-      if ((dispositivosEncontrados == dispositivosAutorizados[0] || dispositivosEncontrados == dispositivosAutorizados[1])
-                    && advertisedDevice.getRSSI() > nivelRSSI) {
-        dispositivoPresente = dispositivosEncontrados;
-        Serial.println(dispositivoPresente);
-        Serial.println(advertisedDevice.getRSSI());
-      } else {
-
-      }
-    }
-};
-
 void scanBLE() {
-  BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setActiveScan(false);
-  BLEScanResults foundDevices = pBLEScan->start(scanTime, false);
+  bool findPeripheralDevice = false;
+  for (const auto& pair : MAC_beacon) {
+    findPeripheralDevice = BLE.scanForAddress(pair.second);
+    BLEDevice peripheral = BLE.available();
+
+    if (peripheral && findPeripheralDevice) {
+      dispositivoPresente = pair.second;
+    }
+  }
 }
 
 void setup() 
@@ -531,8 +568,34 @@ void setup()
   display.print("Aguarde...");
   display.display();
 
-  BLEDevice::init("BLE_Node");
+  MAC_beacon["8012_1"] = MAC_8012_1;
+  MAC_beacon["8022_1"] = MAC_8022_1;
+  if (!BLE.begin()) {
+    Serial.println("BLE initialization failed!");
+    while (1);
+  }
 
+  BLE.setLocalName("BLE_ESP32_PCS3858_SERVER");
+  BLE.setAdvertisedService(service_8012);
+  BLE.setAdvertisedService(service_8022);
+  BLE.setAdvertisedService(service_recv);
+
+  service_8012.addCharacteristic(characteristic_8012_1);
+  service_8012.addCharacteristic(characteristic_8012_2);
+  service_8022.addCharacteristic(characteristic_8022_1);
+  service_8022.addCharacteristic(characteristic_8022_2);
+  service_8022.addCharacteristic(characteristic_8022_3);
+  service_recv.addCharacteristic(characteristic_recv);
+  BLE.addService(service_8012);
+  BLE.addService(service_8022);
+  BLE.addService(service_recv);
+
+
+  //characteristic_8012_1.setValue(1702394562);
+  characteristic_recv.setValue(false); // como padrão, setamos como false o recebimento dos dados
+
+  BLE.advertise(); // Start advertising
+  
   // tenta ate obter sucesso
   while(LoRa_init() == false);
 
@@ -541,7 +604,7 @@ void setup()
 
 /* variaveis utilizados para simular onibus chegando, realiza o trabalho de um contador assincrono que permite nao utilizar delay no loop principal */
 unsigned long previousMillis = 0;
-const long interval = 4000; // 4s
+const long interval = 100; // 100ms
 
 void loop() 
 {
@@ -591,7 +654,6 @@ void loop()
       }
     }
   }
-
   unsigned long currentMillis = millis();
   if(currentMillis - previousMillis >= interval)
   {
@@ -600,8 +662,6 @@ void loop()
     if(dispositivoPresente != "0" && timestampConfigured)
     {
       uint32_t busId = getIdFromMac(dispositivoPresente);
-      Serial.println("Onibus chegou! ");
-      Serial.print(busId);
 
       struct tm timeinfo;
       if (!getLocalTime(&timeinfo)) 
@@ -621,10 +681,17 @@ void loop()
     }
   }
 
-  // if(timestampConfigured)
-  // {
-  //   PrintTime(); // funcao de teste, TODO: deletar depois
-  //   delay(3000);
-  //   timestampConfigured = false;
-  // }
+  int dataInput;
+
+  if (BLE.connected()) {
+    characteristic_recv.readValue(dataInput);
+    if (dataInput == 1) {
+      Serial.print("Read value: ");
+      Serial.println(dataInput);
+      BLE.disconnect();
+      characteristic_recv.setValue(false);
+      Serial.println("Device disconnected");
+    }    
+  }
+
 }

@@ -2,7 +2,6 @@
 #include "time.h"
 #include <ctime>
 #include <PubSubClient.h>
-#include <DHT.h>
 #include <Wire.h>
 #include <LoRa.h>
 #include <SPI.h>
@@ -22,8 +21,6 @@ const int mqttPort = 1883;
 const char* mqttUser = "Bus2"; // Replace with your TagoIO token
 const char* mqttPassword = "e76ce4ff-dc5f-4317-8852-0e8b4b43bbd9"; 
 
-/* GPIO do módulo WiFi LoRa 32(V2) que o pino de comunicação do sensor está ligado. */
-#define DHTPIN    13 /* (GPIO 13) */
 
 /* Definicoes para comunicação com radio LoRa */
 #define SCK_LORA           5
