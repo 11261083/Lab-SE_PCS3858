@@ -10,6 +10,7 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <ArduinoJson.h>
 
 
 /* Endereço I2C do display */
@@ -39,15 +40,16 @@
 
 /* Configuracao do BLE */
 int scanTime = 1; //Em Segundos
-int nivelRSSI = -60; //Ajustar conforme o ambiente
-String dispositivosAutorizados = "ff:ff:c1:0e:22:ec"; //MAC do seu dispositivo BLE
+int nivelRSSI = -95; //Ajustar conforme o ambiente
+String dispositivosAutorizados[] = {"ff:ff:c1:0e:22:ec", "ff:ff:c1:0e:1e:60"}; //MAC do seu dispositivo BLE
 String dispositivoPresente = "0";
 
 
 /* Definicaco do Unique ID do dispositivo */
 #define StopID              101
 #define LineID_A            8012
-#define LineID_B            8032
+#define LineID_B            8022
+#define LineID_C            8032
 
 /* objeto do display */
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, 16);
@@ -59,6 +61,7 @@ enum PacketTypes {
     TIMESTAMP_PACKET = 1,
     BUSARRIVALDATA_PACKET = 2,
     BUSARRIVALDATA_TO_GATEWAY = 3,
+    BUSPREDICTDATA_PACKET = 4,
     // Adicione mais tipos conforme necessário
 };
 
@@ -68,9 +71,15 @@ struct MacToId {
 };
 
 MacToId macMappings[] = {
-    {"ff:ff:c1:0e:1e:60", 32},
+    {"ff:ff:c1:0e:1e:60", 60},
     {"ff:ff:c1:0e:22:ec", 80},
     // Adicione mais mapeamentos conforme necessário
+};
+
+std::map<int, int> busIdToLineId = {
+    {60, 8012},
+    {80, 8022},
+    // outros mapeamentos
 };
 
 typedef struct __attribute__((__packed__))
@@ -91,16 +100,34 @@ struct BusArrivalDataPacket : public LoRaPacketHeader
   uint32_t time;
 };
 
+struct BusPredictDataPacket : public LoRaPacketHeader
+{
+  uint32_t stopId;
+  uint32_t busId;
+  uint32_t predictTime;
+};
+
 #define MAX_HISTORY  8   //
 struct BusInfo 
 {
   uint32_t busId;
   uint32_t lineId;
+  uint32_t stopId;
   uint32_t time;
   bool infoType; // estimativa: false, tempo de chegada: true;
 };
 BusInfo busHistory[MAX_HISTORY];
+BusInfo busPredictions[MAX_HISTORY];
 int currentHistoryIndex = 0;
+int currentPredictionsIndex = 0;
+
+struct BusInfoToBeDisplayed
+{
+  uint32_t lineId;
+  uint32_t time;
+};
+BusInfoToBeDisplayed infoToDisplay[2];
+BusInfoToBeDisplayed predictToDisplay[2];
 
 int indexOfBusInfo(uint32_t busId)
  {
@@ -128,6 +155,7 @@ void busInfoInit()
   {
     busHistory[i].busId = 0;
     busHistory[i].lineId = 0;
+    busHistory[i].stopId = 0;
     busHistory[i].time = 0;
     busHistory[i].infoType = false;
   }
@@ -193,6 +221,11 @@ void setRTCWithUnixTimestamp(time_t unixTimestamp)
 
   settimeofday(&tv, &tz);
 
+  display.clearDisplay();
+  display.setCursor(0, OLED_LINE1);
+  display.print("Configuração do timestamp recebida!");
+  display.display();
+
   timestampConfigured = true;
 }
 
@@ -233,8 +266,9 @@ void PrintBusHistory()
   int temp = currentHistoryIndex - 1;
   if(temp == -1)
   {
-    temp = 7;
+    temp = MAX_HISTORY - 1;
   }
+  Serial.println("Bus History:");
   for(int i = 0; i < MAX_HISTORY; i++)
   {
     if(busHistory[temp].busId == 0)
@@ -242,7 +276,7 @@ void PrintBusHistory()
       temp--;
       if(temp == -1)
       {
-        temp = 7;
+        temp = MAX_HISTORY -1 ;
       }
 
       continue;
@@ -260,43 +294,180 @@ void PrintBusHistory()
       currentHour = currentHour + 24;
     }
 
-    if(busHistory[temp].infoType)
-    {
-      Serial.println("Arrival Time: " + String(currentHour) + " : " + String(timeStruct.tm_min) + " : " + String(timeStruct.tm_sec));
-    }
-    else
-    {
-      Serial.println("Arrival Time: " + String(currentHour - 3) + " : " + String(timeStruct.tm_min) + " : " + String(timeStruct.tm_sec + 10));
-    }
+    Serial.println("Arrival Time: " + String(currentHour) + " : " + String(timeStruct.tm_min) + " : " + String(timeStruct.tm_sec));
 
     temp--;
     if(temp == -1)
     {
-      temp = 7;
+      temp = MAX_HISTORY - 1;
+    }
+  }
+
+  temp = currentPredictionsIndex - 1;
+  if(temp == -1)
+  {
+    temp = MAX_HISTORY - 1;
+  }
+  Serial.println("Bus Predictions:");
+  for(int i = 0; i < MAX_HISTORY; i++)
+  {
+    if(busPredictions[temp].busId == 0)
+    {
+      temp--;
+      if(temp == -1)
+      {
+        temp = MAX_HISTORY -1 ;
+      }
+
+      continue;
+    }
+    Serial.println("Bus ID: " + String(busPredictions[temp].busId));
+    Serial.println("Line ID: " + String(busPredictions[temp].lineId));
+
+    uint32_t unixTime = busPredictions[temp].time;
+    struct tm timeStruct;
+    gmtime_r((const time_t *)&unixTime, &timeStruct);
+    
+    int currentHour = timeStruct.tm_hour - 3;
+    if(currentHour < 0)
+    {
+      currentHour = currentHour + 24;
+    }
+
+    Serial.println("Prediction Time: " + String(currentHour) + " : " + String(timeStruct.tm_min) + " : " + String(timeStruct.tm_sec));
+
+    temp--;
+    if(temp == -1)
+    {
+      temp = MAX_HISTORY - 1;
     }
   }
 }
 
-void processBusArrivalPacketData(BusArrivalDataPacket arrivalData)
+void DisplayBusHistory()
 {
-  if(arrivalData.stopId < StopID)     // OBS: as paradas de onibus numa linha terao seu StopId numa sequencia, logo os dados dos pontos da frente que nao seriam interessantes serao descartados
+  display.clearDisplay();   
+
+  display.setCursor(0, OLED_LINE1);
+  display.print("Arrived: ");
+
+  display.setCursor(0, OLED_LINE2);
+  display.print(infoToDisplay[0].lineId);
+  uint32_t unixTime = infoToDisplay[0].time;
+  struct tm timeStruct;
+  gmtime_r((const time_t *)&unixTime, &timeStruct);
+  int currentHour = timeStruct.tm_hour - 3;
+  if(currentHour < 0)
   {
-    UpdateBusHistory(arrivalData, false);
+    currentHour = currentHour + 24;
+  }
+  display.print(" - ");
+  display.print(String(currentHour) + " : " + String(timeStruct.tm_min) + " : " + String(timeStruct.tm_sec));
+
+  display.setCursor(0, OLED_LINE3);
+  display.print(infoToDisplay[1].lineId);
+  unixTime = infoToDisplay[1].time;
+  gmtime_r((const time_t *)&unixTime, &timeStruct);
+  currentHour = timeStruct.tm_hour - 3;
+  if(currentHour < 0)
+  {
+    currentHour = currentHour + 24;
+  }
+  display.print(" - ");
+  display.print(String(currentHour) + " : " + String(timeStruct.tm_min) + " : " + String(timeStruct.tm_sec));
+
+  display.setCursor(0, OLED_LINE4);
+  display.print("Arrival Predictions");
+
+  display.setCursor(0, OLED_LINE5);
+  display.print(predictToDisplay[0].lineId);
+  unixTime = predictToDisplay[0].time;
+  gmtime_r((const time_t *)&unixTime, &timeStruct);
+  currentHour = timeStruct.tm_hour - 3;
+  if(currentHour < 0)
+  {
+    currentHour = currentHour + 24;
+  }
+  display.print(" - ");
+  display.print(String(currentHour) + " : " + String(timeStruct.tm_min) + " : " + String(timeStruct.tm_sec));
+
+  display.setCursor(0, OLED_LINE6);
+  display.print(predictToDisplay[1].lineId);
+  unixTime = predictToDisplay[1].time;
+  gmtime_r((const time_t *)&unixTime, &timeStruct);
+  currentHour = timeStruct.tm_hour - 3;
+  if(currentHour < 0)
+  {
+    currentHour = currentHour + 24;
+  }
+  display.print(" - ");
+  display.print(String(currentHour) + " : " + String(timeStruct.tm_min) + " : " + String(timeStruct.tm_sec));
+
+  display.display();      
+}
+
+void processBusArrivalPacketData(BusPredictDataPacket predictData)
+{
+  if(predictData.stopId == StopID)     // OBS: as paradas de onibus numa linha terao seu StopId numa sequencia, logo os dados dos pontos da frente que nao seriam interessantes serao descartados
+  {
+    UpdatePredictionHistory(predictData, false);
   }
 }
 
-void UpdateBusHistory(BusArrivalDataPacket arrivalData, bool isArrival)  //TODO: pensar no caso de dados de onibus que AINDA ESTAO na memoria
+void UpdateBusHistory(BusArrivalDataPacket arrivalData, bool isArrival)
 {
   BusInfo newInfo;
   newInfo.infoType = isArrival;
   newInfo.busId = arrivalData.busId;
+  newInfo.stopId = arrivalData.stopId;
   newInfo.lineId = arrivalData.lineId;
   newInfo.time = arrivalData.time;
 
-  busHistory[currentHistoryIndex] = newInfo;
-  currentHistoryIndex = (currentHistoryIndex + 1) % MAX_HISTORY;
+  if(isArrival)
+  {
+    int index = indexOfBusInfo(newInfo.busId);
+    if(index == -1)
+    {
+      busHistory[currentHistoryIndex] = newInfo;
+      currentHistoryIndex = (currentHistoryIndex + 1) % MAX_HISTORY;
+    }
+    else
+    {
+      busHistory[index] = newInfo;
+    }
+  }
+  PrintBusHistory();
+
+  infoToDisplay[1] = infoToDisplay[0];
+  infoToDisplay[0].lineId = arrivalData.lineId;
+  infoToDisplay[0].time = arrivalData.time;
+
+  DisplayBusHistory();
+}
+
+void UpdatePredictionHistory(BusPredictDataPacket predictData, bool isArrival)  //TODO: pensar no caso de dados de onibus que AINDA ESTAO na memoria
+{
+  BusInfo newInfo;
+  newInfo.infoType = isArrival;
+  newInfo.busId = predictData.busId;
+  newInfo.stopId = predictData.stopId;
+  newInfo.lineId = predictData.lineId;
+  newInfo.time = predictData.predictTime;
+
+  if(!isArrival)
+  {
+    busPredictions[currentPredictionsIndex] = newInfo;
+    currentPredictionsIndex = (currentPredictionsIndex + 1) % MAX_HISTORY;
+  }
+
 
   PrintBusHistory();
+
+  predictToDisplay[1] = predictToDisplay[0];
+  predictToDisplay[0].lineId = predictData.lineId;
+  predictToDisplay[0].time = predictData.predictTime;
+
+  DisplayBusHistory();
 }
 
 void SendBusArrivalData(uint32_t busId)
@@ -312,7 +483,7 @@ void SendBusArrivalData(uint32_t busId)
 
     BusArrivalDataPacket arrivalData;
     arrivalData.packetType = BUSARRIVALDATA_TO_GATEWAY;
-    arrivalData.lineId = LineID_B;
+    arrivalData.lineId = busIdToLineId[busId];
     arrivalData.busId = busId;
     arrivalData.stopId = StopID;
     arrivalData.time = static_cast<uint32_t>(unix_timestamp);
@@ -330,8 +501,8 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
       String dispositivosEncontrados = advertisedDevice.getAddress().toString().c_str();
       //Serial.println(dispositivosEncontrados);
-      if (dispositivosEncontrados == dispositivosAutorizados  
-                    /*&& advertisedDevice.getRSSI() > nivelRSSI*/) {
+      if ((dispositivosEncontrados == dispositivosAutorizados[0] || dispositivosEncontrados == dispositivosAutorizados[1])
+                    && advertisedDevice.getRSSI() > nivelRSSI) {
         dispositivoPresente = dispositivosEncontrados;
         Serial.println(dispositivoPresente);
         Serial.println(advertisedDevice.getRSSI());
@@ -370,7 +541,7 @@ void setup()
 
 /* variaveis utilizados para simular onibus chegando, realiza o trabalho de um contador assincrono que permite nao utilizar delay no loop principal */
 unsigned long previousMillis = 0;
-const long interval = 2000; // 2s
+const long interval = 4000; // 4s
 
 void loop() 
 {
@@ -385,8 +556,9 @@ void loop()
     LoRaPacketHeader header;
     LoRa.readBytes((uint8_t*)&header, sizeof(LoRaPacketHeader));
     Serial.println(header.lineId);
+    Serial.println("Packcet Type: " + String(header.packetType));
 
-    if(header.lineId == LineID_A || header.lineId == LineID_B)
+    if(header.lineId == LineID_A || header.lineId == LineID_B || header.packetType == TIMESTAMP_PACKET)
     {
       // Com base no tipo, decidimos como ler o restante
       switch(header.packetType)
@@ -403,13 +575,15 @@ void loop()
           break;
         
         // colocar mais case statement conforme o necessario
-        case BUSARRIVALDATA_PACKET:
-          BusArrivalDataPacket arrivalData;
-          memcpy(&arrivalData, &header, sizeof(LoRaPacketHeader));
-          LoRa.readBytes(((uint8_t*)&arrivalData) + sizeof(LoRaPacketHeader), sizeof(BusArrivalDataPacket) - sizeof(LoRaPacketHeader));
-          processBusArrivalPacketData(arrivalData);
+        case BUSPREDICTDATA_PACKET:
+          BusPredictDataPacket predictData;
+          memcpy(&predictData, &header, sizeof(LoRaPacketHeader));
+          LoRa.readBytes(((uint8_t*)&predictData) + sizeof(LoRaPacketHeader), sizeof(BusPredictDataPacket) - sizeof(LoRaPacketHeader));
+          processBusArrivalPacketData(predictData);
           break;
           
+        case BUSARRIVALDATA_TO_GATEWAY:
+          break;
 
         default:
           Serial.println("Tipo de pacote desconhecido recebido.");
@@ -436,7 +610,7 @@ void loop()
         return;
       }
       time_t unix_timestamp = mktime(&timeinfo);
-      uint32_t timestamp = static_cast<uint32_t>(unix_timestamp) - 1200; //20min * 60s = 1200s
+      uint32_t timestamp = static_cast<uint32_t>(unix_timestamp) - 30; //20min * 60s = 1200s
 
       int index = indexOfBusInfo(busId);
       if(index == -1 || busHistory[index].time < timestamp)

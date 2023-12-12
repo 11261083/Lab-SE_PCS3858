@@ -46,7 +46,7 @@ void setup() {
   BLE.addService(service_8022);
   BLE.addService(service_recv);
 
-  characteristic_8012_1.setValue(1200);
+  //characteristic_8012_1.setValue(1200);
   characteristic_recv.setValue(false); // como padrão, setamos como false o recebimento dos dados
 
   BLE.advertise(); // Start advertising
